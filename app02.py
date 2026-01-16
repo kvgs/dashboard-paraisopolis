@@ -373,7 +373,7 @@ k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
 k3.metric("Débito total (R$)", br_money(impacto_total_f))
 k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
-k5.metric("Consumo médio 12m (m³)", f"{consumo12:.2f}".replace(".", ","))
+k5.metric("Consumo médio 12m", f"{consumo12:.2f}".replace(".", ","))
 k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
 
 st.divider()
