@@ -326,12 +326,12 @@ irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 # Header + KPIs
 # -------------------------
 st.title("Paraisópolis — Segmentação de Clientes e Território")
-st.caption("Dashboard para análise de clusters e apoio à estratégia de redução da inadimplência.")
+st.caption("Dashboard (Excel only) para análise de clusters e apoio à estratégia de redução da inadimplência.")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
-k3.metric("Débito em aberto (R$)", br_money(impacto_total_f))
+k3.metric("Débito total (R$)", br_money(impacto_total_f))
 k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
 k5.metric("Consumo médio 12m", f"{consumo12:.2f}".replace(".", ","))
 k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
@@ -376,57 +376,14 @@ if page == "Visão Geral":
     else:
         st.info("Coluna VALOR_TOTAL_ABERTO não disponível para calcular impacto financeiro.")
 
+    st.divider()
 
-# =========================
-# 1. Selecionar métricas
-# =========================
-metricas = {
-    "inadimplencia": "TEM_DEBITO",
-    "valor_debito": "VALOR_TOTAL_ABERTO",
-    "consumo_12m": "MEDIA_CONSUMO_12_MESES",
-    "consumo_24m": "MEDIA_CONSUMO_24_MESES",
-    "tempo_ligacao": "TEMPO_LIGACAO_ANOS"
-}
-
-# =========================
-# 2. Agregar por cluster
-# =========================
-df_cluster = (
-    df_cliente
-    .groupby("cluster")
-    .agg(
-        inadimplencia=("TEM_DEBITO", "mean"),
-        valor_debito=("VALOR_TOTAL_ABERTO", "median"),
-        consumo_12m=("MEDIA_CONSUMO_12_MESES", "mean"),
-        consumo_24m=("MEDIA_CONSUMO_24_MESES", "mean"),
-        tempo_ligacao=("TEMPO_LIGACAO_ANOS", "mean"),
-        total_clientes=("PDE", "count")
-    )
-    .reset_index()
-)
-
-# =========================
-# 3. Calcular baseline (média geral)
-# =========================
-baseline = df_cluster[
-    ["inadimplencia", "valor_debito", "consumo_12m", "consumo_24m", "tempo_ligacao"]
-].mean()
-
-# =========================
-# 4. Criar tabela relativa (baseline = 1.00)
-# =========================
-df_relativo = df_cluster.copy()
-
-for col in baseline.index:
-    df_relativo[col] = df_relativo[col] / baseline[col]
-
-# =========================
-# 5. Ajustes finais
-# =========================
-df_relativo = df_relativo.round(2)
-
-df_relativo
-
+    st.subheader("Ranking — setores com maior inadimplência (base agregada)")
+    if "inadimplencia_media" in df_setores_f.columns and len(df_setores_f) > 0:
+        top = df_setores_f.sort_values("inadimplencia_media", ascending=False).head(20)
+        st.dataframe(top, use_container_width=True)
+    else:
+        st.info("Coluna 'inadimplencia_media' não encontrada ou sem setores no filtro.")
 
 # -------------------------
 # Page: Clientes
