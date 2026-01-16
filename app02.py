@@ -1,3 +1,4 @@
+# app02.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -12,7 +13,6 @@ st.set_page_config(page_title="Paraisópolis | Clusters", layout="wide")
 DEFAULT_CLIENTES_XLSX = Path("dashboard_clientes.xlsx")
 DEFAULT_SETORES_XLSX = Path("dashboard_setores.xlsx")
 
-
 # -------------------------
 # Helpers
 # -------------------------
@@ -22,30 +22,20 @@ def br_money(x: float) -> str:
     except Exception:
         return "—"
 
-
 def safe_mean(df: pd.DataFrame, col: str) -> float:
     if col in df.columns and len(df) > 0:
         return float(pd.to_numeric(df[col], errors="coerce").mean())
     return 0.0
 
-
-def safe_median(df: pd.DataFrame, col: str) -> float:
-    if col in df.columns and len(df) > 0:
-        return float(pd.to_numeric(df[col], errors="coerce").median())
-    return 0.0
-
-
 @st.cache_data
 def load_xlsx(path: str) -> pd.DataFrame:
     return pd.read_excel(path)
-
 
 def require_columns(df: pd.DataFrame, cols: list[str], name: str):
     missing = [c for c in cols if c not in df.columns]
     if missing:
         st.error(f"Arquivo {name} está sem colunas obrigatórias: {missing}")
         st.stop()
-
 
 def to_int_safe(x):
     try:
@@ -54,7 +44,6 @@ def to_int_safe(x):
         return int(float(x))
     except Exception:
         return None
-
 
 # -------------------------
 # Labels + Ações (ajuste livre)
@@ -152,7 +141,6 @@ CLUSTER_ACTIONS = {
     },
 }
 
-
 def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
     """Estratégia combinada Cliente × Território."""
     terr_name = TERR_NAMES.get(territorio_int, f"Território {territorio_int}")
@@ -199,7 +187,6 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
     base["acoes_reforcadas"] = [x for x in base["acoes_reforcadas"] if not (x in seen or seen.add(x))]
     return base
 
-
 # -------------------------
 # Sidebar: data source
 # -------------------------
@@ -241,6 +228,11 @@ require_columns(df_setores, ["CD_SETOR", "cluster_territorial"], "dashboard_seto
 # Chaves como string
 df_clientes["CD_SETOR"] = df_clientes["CD_SETOR"].astype(str).str.strip()
 df_setores["CD_SETOR"] = df_setores["CD_SETOR"].astype(str).str.strip()
+
+# Ajuste solicitado: trocar "DESCONHECIDO" -> "RESIDENCIAL"
+if "TIPO_IMOVEL" in df_clientes.columns:
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].astype(str).str.strip()
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].replace({"DESCONHECIDO": "RESIDENCIAL"})
 
 # Numéricos
 df_clientes["cluster"] = pd.to_numeric(df_clientes["cluster"], errors="coerce")
@@ -313,11 +305,9 @@ if "VALOR_TOTAL_ABERTO" in df_f.columns and total > 0:
     _v = pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0)
     impacto_total_f = float(_v.sum())
     impacto_medio_f = float(_v.mean())
-    impacto_mediano_f = float(_v.median())
 else:
     impacto_total_f = 0.0
     impacto_medio_f = 0.0
-    impacto_mediano_f = 0.0
 
 consumo12 = safe_mean(df_f, "MEDIA_CONSUMO_12_MESES")
 irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
@@ -326,14 +316,14 @@ irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 # Header + KPIs
 # -------------------------
 st.title("Paraisópolis — Segmentação de Clientes e Território")
-st.caption("Dashboard (Excel only) para análise de clusters e apoio à estratégia de redução da inadimplência.")
+st.caption("Dashboard para análise de clusters e apoio à estratégia de redução da inadimplência.")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
-k3.metric("Débito total (R$)", br_money(impacto_total_f))
+k3.metric("Débito em aberto (R$)", br_money(impacto_total_f))
 k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
-k5.metric("Consumo médio 12m", f"{consumo12:.2f}".replace(".", ","))
+k5.metric("Consumo médio 12m (m³)", f"{consumo12:.2f}".replace(".", ","))
 k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
 
 st.divider()
@@ -384,6 +374,94 @@ if page == "Visão Geral":
         st.dataframe(top, use_container_width=True)
     else:
         st.info("Coluna 'inadimplencia_media' não encontrada ou sem setores no filtro.")
+
+# -------------------------
+# Page: Clientes
+# -------------------------
+elif page == "Clientes":
+    st.subheader("Clientes")
+    st.caption(
+        "Análise dos perfis de clientes (clusters) com foco em impacto financeiro médio e inadimplência, "
+        "apoiando a priorização de ações."
+    )
+
+    st.markdown("### Ações recomendadas por cluster")
+    cluster_opts = sorted([to_int_safe(c) for c in df_f["cluster"].dropna().unique() if to_int_safe(c) is not None])
+
+    if cluster_opts:
+        cluster_escolhido = st.selectbox(
+            "Selecione o cluster de cliente",
+            cluster_opts,
+            format_func=lambda x: f"{x} — {CLUSTER_NAMES.get(x, str(x))}",
+        )
+
+        info = CLUSTER_ACTIONS.get(int(cluster_escolhido))
+        if info:
+            st.markdown(f"**Nome do cluster:** {CLUSTER_NAMES.get(int(cluster_escolhido), '—')}")
+            st.markdown(f"**Descrição:** {info['descricao']}")
+            st.markdown("**Ações recomendadas:**")
+            for a in info["acoes"]:
+                st.write(f"- {a}")
+        else:
+            st.info("Não há ações cadastradas para este cluster.")
+    else:
+        st.info("Sem clusters disponíveis para os filtros atuais.")
+
+    st.divider()
+
+    st.markdown("### Visão estratégica por cluster")
+    st.caption("Comparação entre impacto financeiro médio por cliente e taxa de inadimplência.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Impacto financeiro médio por cliente**")
+        if "VALOR_TOTAL_ABERTO" in df_f.columns and len(df_f) > 0:
+            df_imp_med = (
+                df_f.assign(VALOR_TOTAL_ABERTO=pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0))
+                .groupby("cluster_nome")
+                .agg(impacto_medio=("VALOR_TOTAL_ABERTO", "mean"))
+                .reset_index()
+                .sort_values("impacto_medio", ascending=False)
+            )
+            fig_imp_med = px.bar(df_imp_med, x="cluster_nome", y="impacto_medio")
+            fig_imp_med.update_layout(xaxis_title="", yaxis_title="Impacto financeiro médio (R$)")
+            st.plotly_chart(fig_imp_med, use_container_width=True)
+        else:
+            st.info("Coluna VALOR_TOTAL_ABERTO não disponível para cálculo de impacto financeiro.")
+
+    with col2:
+        st.markdown("**Taxa de inadimplência**")
+        if len(df_f) > 0:
+            df_rate = df_f.groupby("cluster_nome")["TEM_DEBITO"].mean().reset_index()
+            df_rate["TEM_DEBITO"] = df_rate["TEM_DEBITO"] * 100
+            fig_rate = px.bar(df_rate, x="cluster_nome", y="TEM_DEBITO")
+            fig_rate.update_layout(xaxis_title="", yaxis_title="% de clientes inadimplentes")
+            st.plotly_chart(fig_rate, use_container_width=True)
+        else:
+            st.info("Sem dados suficientes para calcular inadimplência.")
+
+    st.divider()
+
+    st.markdown("### Resumo por cluster")
+    if len(df_f) > 0 and "VALOR_TOTAL_ABERTO" in df_f.columns:
+        agg = (
+            df_f.assign(VALOR_TOTAL_ABERTO=pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0))
+            .groupby("cluster_nome")
+            .agg(
+                clientes=("CD_SETOR", "count"),
+                pct_inad=("TEM_DEBITO", "mean"),
+                impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
+                impacto_total=("VALOR_TOTAL_ABERTO", "sum"),
+            )
+            .reset_index()
+        )
+        agg["pct_inad"] = (agg["pct_inad"] * 100).round(1)
+        agg = agg.sort_values("impacto_medio", ascending=False)
+        st.dataframe(agg, use_container_width=True)
+    else:
+        st.info("Sem dados suficientes para gerar o resumo por cluster.")
+
 
 # -------------------------
 # Page: Clientes
