@@ -322,6 +322,7 @@ else:
 consumo12 = safe_mean(df_f, "MEDIA_CONSUMO_12_MESES")
 irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 
+
 # -------------------------
 # Header + KPIs
 # -------------------------
@@ -333,7 +334,7 @@ k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
 k3.metric("Débito total (R$)", br_money(impacto_total_f))
 k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
-k5.metric("Consumo médio 12m", f"{consumo12:.2f}".replace(".", ","))
+k5.metric("Consumo médio 12m (m³)", f"{consumo12:.2f}".replace(".", ","))
 k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
 
 st.divider()
@@ -385,88 +386,63 @@ if page == "Visão Geral":
     else:
         st.info("Coluna 'inadimplencia_media' não encontrada ou sem setores no filtro.")
 
-# -------------------------
-# Heatmap IBGE por cluster territorial (baseline = 1,00)
-# -------------------------
-st.divider()
-st.markdown("### Comparação relativa (baseline = 1,00) — Indicadores IBGE por cluster territorial")
-st.caption(
-    "Heatmap com indicadores territoriais (IBGE) agregados por cluster. "
-    "Valores > 1 indicam acima da média; < 1 abaixo da média (baseline = média entre clusters)."
-)
+    # ----------------------------------------------------
+    # Heatmap / Tabela relativa (baseline = 1.00) — IBGE
+    # (coloque no fim da Visão Geral, como você pediu)
+    # ----------------------------------------------------
+    st.divider()
+    st.subheader("Comparação relativa (baseline = 1,00) — Indicadores IBGE por cluster territorial")
 
-# 1) Escolher a coluna de cluster para comparar
-#    - padrão: cluster_territorial (2 clusters)
-#    - se existir um cluster de setores, você pode trocar aqui
-cluster_col = "cluster_territorial"  # ou "cluster_setor" se existir no df_setores_f
-
-if cluster_col not in df_setores_f.columns:
-    st.info(f"Não encontrei a coluna '{cluster_col}' na base territorial (df_setores_f).")
-else:
-    # 2) Mapear possíveis nomes de colunas IBGE (o código usa o que existir)
-    ibge_candidates = {
-        "Acesso à água": ["ACESSO_AGUA", "acesso_agua", "Acesso a água", "Acesso_agua"],
-        "Acesso a esgoto": ["ACESSO_ESGOTO", "acesso_esgoto", "Acesso a esgoto", "Acesso_esgoto"],
-        "Lixo coletado": ["LIXO_COLETADO", "lixo_coletado", "Lixo coletado", "Lixo_coletado"],
-        "Alfabetização 25 a 29": ["ALFABETIZACAO_25_29", "Alfabetização 25 a 29", "ALF_25_29"],
-        "Alfabetização 30 a 34": ["ALFABETIZACAO_30_34", "Alfabetização 30 a 34", "ALF_30_34"],
-        "Alfabetização 35 a 39": ["ALFABETIZACAO_35_39", "Alfabetização 35 a 39", "ALF_35_39"],
+    # Ajuste aqui os nomes das colunas IBGE conforme existirem no seu df_setores
+    # (Se alguma não existir, ela será ignorada automaticamente pela verificação abaixo)
+    ibge_metrics = {
+        "Acesso à água": "ACESSO_AGUA",
+        "Acesso a esgoto": "ACESSO_ESGOTO",
+        "Lixo coletado": "LIXO_COLETADO_MORADORES",
+        "Alfabetização": "TAXA_ALFABETIZACAO",
     }
 
-    # 3) Descobrir quais colunas existem de verdade no df_setores_f
-    metrics = {}
-    for label, options in ibge_candidates.items():
-        col_found = next((c for c in options if c in df_setores_f.columns), None)
-        if col_found:
-            metrics[label] = col_found
+    # manter somente as métricas que existem no df_setores_f
+    ibge_metrics = {k: v for k, v in ibge_metrics.items() if v in df_setores_f.columns}
 
-    if len(metrics) == 0:
+    if len(df_setores_f) == 0:
+        st.info("Sem setores no filtro atual para calcular a comparação relativa.")
+    elif len(ibge_metrics) == 0:
         st.info(
-            "Não encontrei colunas IBGE esperadas em df_setores_f. "
-            "Diga o nome exato das colunas (como aparecem no Excel) que eu ajusto o mapeamento."
+            "Não encontrei no arquivo de setores as colunas IBGE esperadas. "
+            "Ajuste os nomes em `ibge_metrics` para bater com seu Excel."
         )
     else:
-        # 4) Preparar dados: coerção numérica
-        tmp = df_setores_f[[cluster_col] + list(metrics.values())].copy()
-        for label, col in metrics.items():
-            tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+        df_rel_ibge = build_relative_table(
+            df_setores_f=df_setores_f,
+            group_col="cluster_territorial",
+            metrics=ibge_metrics,
+            how={k: "mean" for k in ibge_metrics.keys()},
+        )
 
-        # 5) Agregar por cluster (média)
-        agg = tmp.groupby(cluster_col)[list(metrics.values())].mean().reset_index()
+        # trocar o id por nome do território (opcional)
+        df_rel_ibge["territorio_nome"] = df_rel_ibge["cluster_territorial"].apply(to_int_safe).map(TERR_NAMES)
+        cols_order = ["cluster_territorial", "territorio_nome"] + list(ibge_metrics.keys())
+        cols_order = [c for c in cols_order if c in df_rel_ibge.columns]
+        df_rel_ibge = df_rel_ibge[cols_order]
 
-        # 6) Renomear colunas para os labels bonitos
-        inv = {v: k for k, v in metrics.items()}
-        agg = agg.rename(columns=inv)
+        # Mostra a tabela + heatmap
+        st.dataframe(df_rel_ibge, use_container_width=True)
 
-        # 7) Baseline = média entre clusters
-        metric_cols = list(metrics.keys())
-        baseline = agg[metric_cols].mean()
+        # heatmap (sem barras empilhadas)
+        heat = df_rel_ibge.set_index("territorio_nome" if "territorio_nome" in df_rel_ibge.columns else "cluster_territorial")
+        heat = heat[[c for c in heat.columns if c in ibge_metrics.keys()]]
 
-        # 8) Relativo (baseline = 1,00)
-        rel = agg.copy()
-        for c in metric_cols:
-            denom = baseline.get(c, np.nan)
-            rel[c] = rel[c] / denom if pd.notna(denom) and denom != 0 else np.nan
-
-        # 9) Melhorar rótulos do cluster (0/1 -> nomes)
-        if cluster_col == "cluster_territorial":
-            rel["Cluster territorial"] = rel[cluster_col].apply(lambda x: TERR_NAMES.get(int(x), str(x)) if pd.notna(x) else "—")
-        else:
-            rel["Cluster"] = rel[cluster_col].astype(str)
-
-        rel = rel.drop(columns=[cluster_col]).round(2)
-
-        # 10) Estilo tipo heatmap (centrado em 1,00)
-        styler = rel.style.format(precision=2)
-
-        # tenta centralizar visualmente perto de 1.0
-        try:
-            styler = styler.background_gradient(subset=metric_cols, axis=None, vmin=0.8, vmax=1.2)
-        except Exception:
-            pass
-
-        st.dataframe(styler, use_container_width=True, hide_index=True)
-
+        fig_hm = px.imshow(
+            heat,
+            aspect="auto",
+            text_auto=True,
+        )
+        fig_hm.update_layout(
+            xaxis_title="Indicadores (baseline = 1,00)",
+            yaxis_title="Cluster territorial",
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
 
 # -------------------------
 # Page: Clientes
