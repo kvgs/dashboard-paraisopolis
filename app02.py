@@ -55,6 +55,51 @@ def to_int_safe(x):
     except Exception:
         return None
 
+from typing import Optional, Dict
+
+def build_relative_table(
+    df_setores_f: pd.DataFrame,
+    group_col: str,
+    metrics: Dict[str, str],
+    how: Optional[Dict[str, str]] = None,
+) -> pd.DataFrame:
+    """
+    Cria tabela de comparação relativa (baseline=1.00) por grupo (ex.: cluster_territorial).
+    - metrics: {"nome_coluna_saida": "coluna_no_df"}
+    - how: {"nome_coluna_saida": "mean"|"median"} (default: mean)
+    """
+    if how is None:
+        how = {k: "mean" for k in metrics.keys()}
+
+    tmp = df_setores_f.copy()
+
+    # Garantir numéricos nas métricas
+    for out, col in metrics.items():
+        if col in tmp.columns:
+            tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+
+    agg_dict = {}
+    for out, col in metrics.items():
+        func = how.get(out, "mean")
+        if func not in ("mean", "median"):
+            func = "mean"
+        agg_dict[out] = (col, func)
+
+    df_agg = (
+        tmp.groupby(group_col)
+        .agg(**agg_dict)
+        .reset_index()
+        .sort_values(group_col)
+    )
+
+    base = df_agg[list(metrics.keys())].mean(numeric_only=True)
+
+    df_rel = df_agg.copy()
+    for k in metrics.keys():
+        if k in df_rel.columns and pd.notna(base.get(k)) and base.get(k) != 0:
+            df_rel[k] = df_rel[k] / base[k]
+
+    return df_rel.round(2)
 
 # -------------------------
 # Labels + Ações (ajuste livre)
