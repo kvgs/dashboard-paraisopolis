@@ -164,7 +164,6 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
         "canais_sugeridos": [],
     }
 
-    # Diretriz por território
     if territorio_int == 0:
         base["diretriz_territorial"] = (
             "Priorizar ações coletivas/territoriais, regularização em massa e integração socioassistencial."
@@ -180,13 +179,11 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
     else:
         base["diretriz_territorial"] = "Diretriz territorial não definida (valor fora do padrão 0/1)."
 
-    # Reforços por cluster
     info = CLUSTER_ACTIONS.get(cluster_int)
     if info:
         acoes = info["acoes"]
         base["acoes_reforcadas"] = acoes[:2] if len(acoes) >= 2 else acoes
 
-    # Ajustes práticos por combinação
     if cluster_int in (0, 7) and territorio_int == 0:
         base["acoes_reforcadas"] += ["Negociação coletiva por setor", "Programa contínuo (não pontual)"]
     if cluster_int == 2 and territorio_int == 1:
@@ -194,7 +191,6 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
     if cluster_int == 6:
         base["acoes_reforcadas"] += ["Acionar time técnico (vistoria/regularização) antes de cobrança intensiva"]
 
-    # Remover duplicados preservando ordem
     seen = set()
     base["acoes_reforcadas"] = [x for x in base["acoes_reforcadas"] if not (x in seen or seen.add(x))]
     return base
@@ -242,6 +238,13 @@ require_columns(df_setores, ["CD_SETOR", "cluster_territorial"], "dashboard_seto
 df_clientes["CD_SETOR"] = df_clientes["CD_SETOR"].astype(str).str.strip()
 df_setores["CD_SETOR"] = df_setores["CD_SETOR"].astype(str).str.strip()
 
+# ✅ Ajuste: TIPO_IMOVEL (DESCONHECIDO -> RESIDENCIAL)
+if "TIPO_IMOVEL" in df_clientes.columns:
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].astype(str).str.strip()
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].replace(["nan", "None", ""], np.nan)
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].fillna("RESIDENCIAL")
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].replace("DESCONHECIDO", "RESIDENCIAL")
+
 # Numéricos
 df_clientes["cluster"] = pd.to_numeric(df_clientes["cluster"], errors="coerce")
 df_clientes["cluster_territorial"] = pd.to_numeric(df_clientes["cluster_territorial"], errors="coerce")
@@ -257,6 +260,7 @@ df_clientes["territorio_nome"] = df_clientes["territorio_int"].map(TERR_NAMES).f
 
 df_setores["territorio_int"] = df_setores["cluster_territorial"].apply(to_int_safe)
 df_setores["territorio_nome"] = df_setores["territorio_int"].map(TERR_NAMES).fillna(df_setores["cluster_territorial"].astype(str))
+
 
 # -------------------------
 # Sidebar: navigation + filters
@@ -326,17 +330,18 @@ irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 # Header + KPIs
 # -------------------------
 st.title("Paraisópolis — Segmentação de Clientes e Território")
-st.caption("Dashboard (Excel only) para análise de clusters e apoio à estratégia de redução da inadimplência.")
+st.caption("Dashboard para análise de clusters e apoio à estratégia de redução da inadimplência.")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
-k3.metric("Impacto total (R$)", br_money(impacto_total_f))
-k4.metric("Impacto médio por cliente (R$)", br_money(impacto_medio_f))
-k5.metric("Consumo médio 12m (m³)", f"{consumo12:.2f}".replace(".", ","))
+k3.metric("Débito em aberto (R$)", br_money(impacto_total_f))
+k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
+k5.metric("Consumo médio mensal (12m) — m³/cliente", f"{consumo12:.2f}".replace(".", ","))
 k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
 
 st.divider()
+
 
 # -------------------------
 # Page: Visão Geral
@@ -359,6 +364,89 @@ if page == "Visão Geral":
 
     st.divider()
 
+    # ✅ Dois gráficos comparativos (sem empilhado)
+    st.subheader("Comparativos por cluster (clientes)")
+
+    col1, col2 = st.columns(2)
+
+    # (1) % Tarifa social vs % Inadimplência
+    with col1:
+        st.markdown("### % Tarifa social vs % Inadimplência")
+        dfp = df_f.copy()
+
+        if "ENQUADRA_TARIFA_SOCIAL" in dfp.columns:
+            dfp["TARIFA_SOCIAL_SIM"] = (dfp["ENQUADRA_TARIFA_SOCIAL"].astype(str).str.upper() == "SIM").astype(int)
+        else:
+            dfp["TARIFA_SOCIAL_SIM"] = np.nan
+
+        kpis = (
+            dfp.groupby("cluster_nome")
+               .agg(
+                    pct_tarifa_social=("TARIFA_SOCIAL_SIM", "mean"),
+                    pct_inad=("TEM_DEBITO", "mean"),
+                    clientes=("CD_SETOR", "count"),
+               )
+               .reset_index()
+        )
+
+        kpis["pct_tarifa_social"] = (kpis["pct_tarifa_social"] * 100).round(1)
+        kpis["pct_inad"] = (kpis["pct_inad"] * 100).round(1)
+
+        kpis_long = kpis.melt(
+            id_vars=["cluster_nome", "clientes"],
+            value_vars=["pct_tarifa_social", "pct_inad"],
+            var_name="indicador",
+            value_name="pct"
+        )
+
+        kpis_long["indicador"] = kpis_long["indicador"].replace({
+            "pct_tarifa_social": "% Tarifa social (SIM)",
+            "pct_inad": "% Inadimplentes (TEM_DEBITO=1)",
+        })
+
+        fig_kpi = px.bar(
+            kpis_long,
+            x="cluster_nome",
+            y="pct",
+            color="indicador",
+            barmode="group",
+        )
+        fig_kpi.update_layout(xaxis_title="", yaxis_title="%", legend_title="")
+        st.plotly_chart(fig_kpi, use_container_width=True)
+
+    # (2) Consumo 12m vs 24m
+    with col2:
+        st.markdown("### Consumo médio 12m vs 24m (m³/cliente)")
+        if {"MEDIA_CONSUMO_12_MESES", "MEDIA_CONSUMO_24_MESES"} <= set(df_f.columns) and len(df_f) > 0:
+            cons = (
+                df_f.groupby("cluster_nome")
+                   .agg(
+                        consumo_12m=("MEDIA_CONSUMO_12_MESES", "mean"),
+                        consumo_24m=("MEDIA_CONSUMO_24_MESES", "mean"),
+                   )
+                   .reset_index()
+            )
+
+            cons_long = cons.melt(id_vars="cluster_nome", var_name="janela", value_name="m3")
+            cons_long["janela"] = cons_long["janela"].replace({
+                "consumo_12m": "Consumo médio (12m)",
+                "consumo_24m": "Consumo médio (24m)",
+            })
+
+            fig_cons = px.line(
+                cons_long,
+                x="cluster_nome",
+                y="m3",
+                color="janela",
+                markers=True,
+            )
+            fig_cons.update_layout(xaxis_title="", yaxis_title="m³", legend_title="")
+            st.plotly_chart(fig_cons, use_container_width=True)
+        else:
+            st.info("Colunas de consumo não estão disponíveis para este filtro.")
+
+    st.divider()
+
     st.markdown("### Onde está o maior impacto financeiro?")
     if "VALOR_TOTAL_ABERTO" in df_f.columns and len(df_f) > 0:
         df_tmp = df_f.copy()
@@ -369,7 +457,6 @@ if page == "Visão Geral":
             .sum()
             .sort_values(ascending=False)
         )
-
         top_cluster_nome = impacto_top.index[0]
         top_cluster_valor = float(impacto_top.iloc[0])
         st.success(f"Maior impacto total: **{top_cluster_nome}** — **R$ {br_money(top_cluster_valor)}**")
@@ -385,19 +472,17 @@ if page == "Visão Geral":
     else:
         st.info("Coluna 'inadimplencia_media' não encontrada ou sem setores no filtro.")
 
+
 # -------------------------
 # Page: Clientes
 # -------------------------
 elif page == "Clientes":
     st.subheader("Clientes")
     st.caption(
-        "Análise dos perfis de clientes (clusters) com foco em impacto financeiro médio e inadimplência, "
-        "apoiando a priorização de ações."
+        "Análise dos perfis de clientes (clusters) com foco em impacto financeiro, inadimplência e recomendações."
     )
 
-    # -------------------------
     # Ações recomendadas por cluster (interativo)
-    # -------------------------
     st.markdown("### Ações recomendadas por cluster")
 
     cluster_opts = sorted(
@@ -425,110 +510,98 @@ elif page == "Clientes":
 
     st.divider()
 
-    # -------------------------
     # Gráficos estratégicos (lado a lado)
-    # -------------------------
     st.markdown("### Visão estratégica por cluster")
-    st.caption(
-        "Comparação entre impacto financeiro médio por cliente e taxa de inadimplência, "
-        "permitindo avaliar simultaneamente severidade financeira e recorrência do problema."
-    )
+    st.caption("Comparação entre impacto financeiro e inadimplência para apoiar priorização.")
 
     col1, col2 = st.columns(2)
 
-    # -------- Gráfico 1: Impacto financeiro médio --------
     with col1:
-        st.markdown("**Impacto financeiro médio por cliente**")
-
+        st.markdown("**Impacto financeiro médio por cliente (R$)**")
         if "VALOR_TOTAL_ABERTO" in df_f.columns and len(df_f) > 0:
             df_imp_med = (
-                df_f.assign(
-                    VALOR_TOTAL_ABERTO=pd.to_numeric(
-                        df_f["VALOR_TOTAL_ABERTO"], errors="coerce"
-                    ).fillna(0)
-                )
-                .groupby("cluster_nome")
-                .agg(
-                    impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
-                )
-                .reset_index()
-                .sort_values("impacto_medio", ascending=False)
+                df_f.assign(VALOR_TOTAL_ABERTO=pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0))
+                  .groupby("cluster_nome")
+                  .agg(impacto_medio=("VALOR_TOTAL_ABERTO", "mean"))
+                  .reset_index()
+                  .sort_values("impacto_medio", ascending=False)
             )
 
-            fig_imp_med = px.bar(
-                df_imp_med,
-                x="cluster_nome",
-                y="impacto_medio",
-            )
-            fig_imp_med.update_layout(
-                xaxis_title="",
-                yaxis_title="Impacto financeiro médio (R$)",
-            )
+            fig_imp_med = px.bar(df_imp_med, x="cluster_nome", y="impacto_medio")
+            fig_imp_med.update_layout(xaxis_title="", yaxis_title="R$")
             st.plotly_chart(fig_imp_med, use_container_width=True)
         else:
-            st.info("Coluna VALOR_TOTAL_ABERTO não disponível para cálculo de impacto financeiro.")
+            st.info("Coluna VALOR_TOTAL_ABERTO não disponível.")
 
-    # -------- Gráfico 2: Taxa de inadimplência --------
     with col2:
-        st.markdown("**Taxa de inadimplência**")
-
+        st.markdown("**Taxa de inadimplência (% clientes com débito)**")
         if len(df_f) > 0:
-            df_rate = (
-                df_f.groupby("cluster_nome")["TEM_DEBITO"]
-                .mean()
-                .reset_index()
-            )
-            df_rate["TEM_DEBITO"] = df_rate["TEM_DEBITO"] * 100
+            df_rate = df_f.groupby("cluster_nome")["TEM_DEBITO"].mean().reset_index()
+            df_rate["pct_inad"] = (df_rate["TEM_DEBITO"] * 100).round(1)
 
-            fig_rate = px.bar(
-                df_rate,
-                x="cluster_nome",
-                y="TEM_DEBITO",
-            )
-            fig_rate.update_layout(
-                xaxis_title="",
-                yaxis_title="% de clientes inadimplentes",
-            )
+            fig_rate = px.bar(df_rate, x="cluster_nome", y="pct_inad")
+            fig_rate.update_layout(xaxis_title="", yaxis_title="%")
             st.plotly_chart(fig_rate, use_container_width=True)
         else:
             st.info("Sem dados suficientes para calcular inadimplência.")
 
     st.divider()
 
-        # -------------------------
-    # Tabela resumo por cluster
-    # -------------------------
+    # Resumo por cluster
     st.markdown("### Resumo por cluster")
-
     if len(df_f) > 0 and "VALOR_TOTAL_ABERTO" in df_f.columns:
         agg = (
-            df_f.assign(
-                VALOR_TOTAL_ABERTO=pd.to_numeric(
-                    df_f["VALOR_TOTAL_ABERTO"], errors="coerce"
-                ).fillna(0)
-            )
-            .groupby("cluster_nome")
-            .agg(
-                clientes=("CD_SETOR", "count"),
-                pct_inad=("TEM_DEBITO", "mean"),
-                impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
-                impacto_total=("VALOR_TOTAL_ABERTO", "sum"),
-            )
-            .reset_index()
+            df_f.assign(VALOR_TOTAL_ABERTO=pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0))
+              .groupby("cluster_nome")
+              .agg(
+                   clientes=("CD_SETOR", "count"),
+                   pct_inad=("TEM_DEBITO", "mean"),
+                   impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
+                   impacto_total=("VALOR_TOTAL_ABERTO", "sum"),
+              )
+              .reset_index()
         )
-
         agg["pct_inad"] = (agg["pct_inad"] * 100).round(1)
+        agg = agg.sort_values("impacto_total", ascending=False)
 
-        agg = agg.sort_values("impacto_medio", ascending=False)
-
-        st.dataframe(
-            agg,
-            use_container_width=True,
-        )
+        st.dataframe(agg, use_container_width=True)
     else:
         st.info("Sem dados suficientes para gerar o resumo por cluster.")
 
+    st.divider()
 
+    # ✅ Tabela comparativa (baseline = 1.00)
+    st.markdown("### Comparativo relativo por cluster (baseline = 1,00)")
+    st.caption("Valores > 1 indicam acima da média global; valores < 1 indicam abaixo da média global.")
+
+    needed = ["TEM_DEBITO", "VALOR_TOTAL_ABERTO", "MEDIA_CONSUMO_12_MESES", "MEDIA_CONSUMO_24_MESES", "TEMPO_LIGACAO_ANOS"]
+    if all(c in df_f.columns for c in needed) and len(df_f) > 0:
+        tmp = df_f.copy()
+        tmp["VALOR_TOTAL_ABERTO"] = pd.to_numeric(tmp["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0)
+
+        df_cluster = (
+            tmp.groupby("cluster_nome")
+               .agg(
+                    inadimplencia=("TEM_DEBITO", "mean"),
+                    valor_debito=("VALOR_TOTAL_ABERTO", "median"),
+                    consumo_12m=("MEDIA_CONSUMO_12_MESES", "mean"),
+                    consumo_24m=("MEDIA_CONSUMO_24_MESES", "mean"),
+                    tempo_ligacao=("TEMPO_LIGACAO_ANOS", "mean"),
+                    total_clientes=("CD_SETOR", "count"),
+               )
+               .reset_index()
+        )
+
+        baseline = df_cluster[["inadimplencia", "valor_debito", "consumo_12m", "consumo_24m", "tempo_ligacao"]].mean()
+
+        df_relativo = df_cluster.copy()
+        for col in baseline.index:
+            df_relativo[col] = df_relativo[col] / baseline[col]
+
+        df_relativo = df_relativo.round(2)
+        st.dataframe(df_relativo, use_container_width=True)
+    else:
+        st.info("Faltam colunas para montar o comparativo relativo (baseline).")
 
 
 # -------------------------
@@ -581,6 +654,7 @@ elif page == "Território":
     st.markdown("### Base territorial (setores) — para os filtros atuais")
     st.dataframe(df_setores_f, use_container_width=True)
 
+
 # -------------------------
 # Page: Matriz Estratégica
 # -------------------------
@@ -589,16 +663,11 @@ elif page == "Matriz Estratégica":
     st.caption("Volume, composição, impacto financeiro e recomendação operacional por combinação cliente × território.")
 
     st.markdown("### Matriz (% por território)")
-
-    matriz_pct = (
-        pd.crosstab(
-            df_f["cluster_nome"],
-            df_f["territorio_nome"],
-            normalize="columns"
-        ) * 100
-    )
-
-    st.dataframe(matriz_pct.round(1), use_container_width=True)
+    if len(df_f) > 0:
+        matriz_pct = (pd.crosstab(df_f["cluster_nome"], df_f["territorio_nome"], normalize="columns") * 100)
+        st.dataframe(matriz_pct.round(1), use_container_width=True)
+    else:
+        st.info("Sem dados nos filtros atuais.")
 
     st.divider()
 
@@ -609,51 +678,23 @@ elif page == "Matriz Estratégica":
 
         impacto_matriz = (
             df_tmp.groupby(["cluster_nome", "territorio_nome"])
-            .agg(
-                clientes=("CD_SETOR", "count"),
-                impacto_total=("VALOR_TOTAL_ABERTO", "sum"),
-                impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
-            )
-            .reset_index()
+                  .agg(
+                       clientes=("CD_SETOR", "count"),
+                       impacto_total=("VALOR_TOTAL_ABERTO", "sum"),
+                       impacto_medio=("VALOR_TOTAL_ABERTO", "mean"),
+                  )
+                  .reset_index()
         )
 
-        pivot_total = (
-            impacto_matriz.pivot(
-                index="cluster_nome",
-                columns="territorio_nome",
-                values="impacto_total"
-            ).fillna(0)
-        )
+        pivot_total = impacto_matriz.pivot(index="cluster_nome", columns="territorio_nome", values="impacto_total").fillna(0)
         st.caption("Impacto total (R$) por combinação.")
         st.dataframe(pivot_total, use_container_width=True)
 
-        pivot_medio = (
-            impacto_matriz.pivot(
-                index="cluster_nome",
-                columns="territorio_nome",
-                values="impacto_medio"
-            ).fillna(0)
-        )
+        pivot_medio = impacto_matriz.pivot(index="cluster_nome", columns="territorio_nome", values="impacto_medio").fillna(0)
         st.caption("Impacto médio por cliente (R$) por combinação.")
         st.dataframe(pivot_medio, use_container_width=True)
     else:
         st.info("Coluna VALOR_TOTAL_ABERTO não disponível para calcular impacto financeiro.")
-
-    st.divider()
-
-    st.markdown("### Prioridades sugeridas (automático)")
-    if len(df_f) > 0:
-        for terr_int, terr_name in sorted(TERR_NAMES.items()):
-            df_t = df_f[df_f["territorio_int"] == terr_int]
-            if len(df_t) == 0:
-                continue
-
-            top = df_t["cluster_nome"].value_counts(normalize=True).head(3) * 100
-            st.markdown(f"**{terr_name}** — Top 3 perfis no filtro atual:")
-            for name, pct in top.items():
-                st.write(f"- {name}: **{pct:.1f}%**")
-    else:
-        st.info("Sem dados nos filtros atuais.")
 
     st.divider()
 
@@ -680,6 +721,7 @@ elif page == "Matriz Estratégica":
 
     if cluster_pick is not None and terr_pick is not None:
         strat = compute_strategy(int(terr_pick), int(cluster_pick))
+
         st.markdown(f"**Território:** {strat['territorio']}")
         st.markdown(f"**Diretriz territorial:** {strat['diretriz_territorial']}")
         st.markdown(f"**Tom de comunicação:** {strat['tom_de_comunicacao']}")
@@ -699,17 +741,6 @@ elif page == "Matriz Estratégica":
         for a in strat["acoes_reforcadas"]:
             st.write(f"- {a}")
 
-    st.divider()
-    st.markdown(
-        """
-### Framework resumido
-- **Território 0 (alta pressão estrutural)**: ações coletivas, territorialização da negociação, integração socioassistencial.
-- **Território 1 (mais consolidado)**: ações individualizadas, prevenção digital, cobrança segmentada.
-- **Clusters 0 e 7**: prioridade por volume/recorrência (impacto).
-- **Clusters 4, 5 e 6**: casos especiais (alto impacto unitário / outliers / necessidade técnica).
-        """
-    )
-
 
 # -------------------------
 # Page: Metodologia
@@ -724,52 +755,38 @@ Segmentar perfis de clientes e tipos de território em Paraisópolis para apoiar
 integrando dados operacionais e variáveis socioeconômicas do IBGE.
 
 ### Modelos
-**1) Cluster por cliente (KMeans, K=8)**  
+**1) Cluster por cliente (KMeans)**  
 Segmentação comportamental a partir de consumo, débitos, irregularidades, tempo de ligação e variáveis categóricas (ex.: tarifa social).
 
 **2) Agregação por setor censitário**  
 Construção de indicadores territoriais: inadimplência média, consumo médio, débito médio, valor médio e tempo médio de ligação.
 
-**3) Cluster territorial (KMeans, K=2)**  
+**3) Cluster territorial (KMeans)**  
 Segmentação estrutural do território integrando indicadores operacionais agregados e variáveis do IBGE (densidade, pessoas/domicílio, alfabetização).
 
 ### Seleção de K
 Utilizou-se o método da silhueta, priorizando interpretabilidade e acionabilidade.
 
-### Uso operacional
-A matriz Cliente × Território orienta abordagens diferenciadas:
-- territórios de alta pressão estrutural → ações coletivas e integração social
-- territórios mais consolidados → estratégias individualizadas e digitais
+### Impacto financeiro (KPIs)
+- **Impacto total (R$):** soma do valor total em aberto (VALOR_TOTAL_ABERTO) na base filtrada.
+- **Impacto médio (R$):** média do VALOR_TOTAL_ABERTO por cliente na base filtrada.
 
 ### Metodologia: Clusterização em Duas Etapas e Matriz Estratégica Cliente × Território
 
-A análise adotou uma abordagem metodológica em duas etapas, com o objetivo de respeitar a natureza distinta das informações
-referentes aos **clientes** e ao **território**, evitando distorções analíticas e assegurando maior interpretabilidade
-dos resultados.
+A análise adotou uma abordagem em duas etapas para respeitar a natureza distinta das informações de **clientes** e **território**.
 
-Na primeira etapa, realizou-se a **clusterização dos clientes**, utilizando variáveis associadas ao perfil de consumo
-e à situação financeira, tais como consumo médio, número e valor de débitos, irregularidades e tipo de economia.
-Essa etapa teve como finalidade identificar **padrões homogêneos de comportamento dos clientes**, permitindo a
-construção de tipologias baseadas exclusivamente em características individuais e financeiras.
+- **Etapa 1 (cliente):** clusterização usando variáveis individuais (consumo, débitos, irregularidades, tempo de ligação e perfis).
+- **Etapa 2 (território):** agregação por setor censitário + variáveis IBGE, seguida de clusterização territorial.
 
-Na segunda etapa, procedeu-se à **clusterização territorial**, a partir da agregação dos dados por setor censitário
-e da incorporação de variáveis estruturais, operacionais e socioeconômicas (incluindo indicadores do IBGE).
-Essas variáveis representam condições do território que influenciam diretamente a viabilidade e o custo das ações,
-mas que não correspondem a comportamentos individuais dos clientes.
+Após isso, utiliza-se a **Matriz Estratégica Cliente × Território** para orientar decisões:
+- **perfil do cliente (potencial de recuperação / risco)**
+×
+- **contexto territorial (complexidade e viabilidade operacional)**
 
-Após a definição das tipologias de clientes e de territórios, realizou-se o **cruzamento entre essas duas dimensões**
-por meio de uma **Matriz Estratégica Cliente × Território**. Essa matriz permite avaliar simultaneamente o
-**potencial financeiro associado aos perfis de clientes** e a **complexidade de atuação imposta pelas condições
-territoriais**, orientando a priorização de ações e a definição de estratégias diferenciadas de intervenção.
-
-A opção por não realizar uma única clusterização integrada deve-se ao fato de que a combinação direta de variáveis
-individuais e territoriais tende a gerar agrupamentos estatisticamente válidos, porém de difícil interpretação
-e com menor utilidade operacional. Dessa forma, a abordagem em duas etapas assegura maior robustez metodológica,
-transparência analítica e aderência à realidade operacional e social do território analisado.
-
+A opção por não realizar uma única clusterização integrada ocorre porque misturar variáveis individuais (cliente) e estruturais (setor)
+tende a produzir agrupamentos difíceis de interpretar e menos acionáveis operacionalmente.
         """
     )
-
 
 # Sidebar footer
 st.sidebar.divider()
