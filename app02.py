@@ -10,8 +10,11 @@ from pathlib import Path
 st.set_page_config(page_title="Paraisópolis | Clusters", layout="wide")
 
 DEFAULT_CLIENTES_XLSX = Path("dashboard_clientes.xlsx")
-DEFAULT_SETORES_XLSX = Path("dashboard_setores.xlsx")
+DEFAULT_SETORES_XLSX  = Path("dashboard_setores.xlsx")
 
+# Arquivo IBGE (por CD_SETOR) — coloque na mesma pasta do app
+DEFAULT_IBGE_XLSX = Path("Paraisópolis.xlsx")
+SHEET_IBGE = 0  # se precisar, troque pelo nome da aba (ex.: "IBGE" / "Base" etc.)
 
 # -------------------------
 # Helpers
@@ -22,30 +25,20 @@ def br_money(x: float) -> str:
     except Exception:
         return "—"
 
-
 def safe_mean(df: pd.DataFrame, col: str) -> float:
     if col in df.columns and len(df) > 0:
         return float(pd.to_numeric(df[col], errors="coerce").mean())
     return 0.0
 
-
-def safe_median(df: pd.DataFrame, col: str) -> float:
-    if col in df.columns and len(df) > 0:
-        return float(pd.to_numeric(df[col], errors="coerce").median())
-    return 0.0
-
-
 @st.cache_data
 def load_xlsx(path: str) -> pd.DataFrame:
     return pd.read_excel(path)
-
 
 def require_columns(df: pd.DataFrame, cols: list[str], name: str):
     missing = [c for c in cols if c not in df.columns]
     if missing:
         st.error(f"Arquivo {name} está sem colunas obrigatórias: {missing}")
         st.stop()
-
 
 def to_int_safe(x):
     try:
@@ -55,54 +48,65 @@ def to_int_safe(x):
     except Exception:
         return None
 
-from typing import Optional, Dict
+def normalize_colname(s: str) -> str:
+    return str(s).strip()
 
-def build_relative_table(
-    df_setores_f: pd.DataFrame,
-    group_col: str,
-    metrics: Dict[str, str],
-    how: Optional[Dict[str, str]] = None,
-) -> pd.DataFrame:
+def build_relative_table(df: pd.DataFrame, group_col: str, value_cols: list[str]) -> pd.DataFrame:
     """
-    Cria tabela de comparação relativa (baseline=1.00) por grupo (ex.: cluster_territorial).
-    - metrics: {"nome_coluna_saida": "coluna_no_df"}
-    - how: {"nome_coluna_saida": "mean"|"median"} (default: mean)
+    Tabela relativa (baseline=1,00):
+      (média do grupo) / (média geral)
     """
-    if how is None:
-        how = {k: "mean" for k in metrics.keys()}
+    tmp = df.copy()
+    tmp[group_col] = pd.to_numeric(tmp[group_col], errors="coerce")
 
-    tmp = df_setores_f.copy()
+    for c in value_cols:
+        tmp[c] = pd.to_numeric(tmp[c], errors="coerce")
 
-    # Garantir numéricos nas métricas
-    for out, col in metrics.items():
-        if col in tmp.columns:
-            tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+    baseline = tmp[value_cols].mean(numeric_only=True)
+    grp = tmp.groupby(group_col)[value_cols].mean(numeric_only=True)
+    rel = grp.divide(baseline, axis=1).reset_index()
+    return rel
 
-    agg_dict = {}
-    for out, col in metrics.items():
-        func = how.get(out, "mean")
-        if func not in ("mean", "median"):
-            func = "mean"
-        agg_dict[out] = (col, func)
+def load_ibge_table() -> tuple[pd.DataFrame | None, list[str]]:
+    """Carrega IBGE por CD_SETOR e devolve (df_ibge_sel, cols_ok)."""
+    ibge_cols_expected = [
+        "Acesso a esgoto",
+        "Acesso a água",
+        "Lixo coletado_moradores",
+        "Alfabetização 15 a 19",
+        "Alfabetização 20 a 24",
+        "Alfabetização 25 a 29",
+        "Alfabetização 30 a 34",
+        "Alfabetização 35 a 39",
+        "Alfabetização 40 a 44",
+        "Alfabetização 45 a 49",
+        "Alfabetização 50 a 54",
+        "Alfabetização 55 a 59",
+        "Alfabetização 60 a 64",
+        "Alfabetização 65 a 69",
+        "Alfabetização 70 a 80",
+    ]
 
-    df_agg = (
-        tmp.groupby(group_col)
-        .agg(**agg_dict)
-        .reset_index()
-        .sort_values(group_col)
-    )
+    if not DEFAULT_IBGE_XLSX.exists():
+        return None, []
 
-    base = df_agg[list(metrics.keys())].mean(numeric_only=True)
+    df_ibge = pd.read_excel(DEFAULT_IBGE_XLSX, sheet_name=SHEET_IBGE)
+    df_ibge.columns = [normalize_colname(c) for c in df_ibge.columns]
 
-    df_rel = df_agg.copy()
-    for k in metrics.keys():
-        if k in df_rel.columns and pd.notna(base.get(k)) and base.get(k) != 0:
-            df_rel[k] = df_rel[k] / base[k]
+    if "CD_SETOR" not in df_ibge.columns:
+        return None, []
 
-    return df_rel.round(2)
+    cols_ok = [c for c in ibge_cols_expected if c in df_ibge.columns]
+    if len(cols_ok) == 0:
+        return None, []
+
+    df_ibge_sel = df_ibge[["CD_SETOR"] + cols_ok].copy()
+    df_ibge_sel["CD_SETOR"] = df_ibge_sel["CD_SETOR"].astype(str).str.strip()
+    return df_ibge_sel, cols_ok
+
 
 # -------------------------
-# Labels + Ações (ajuste livre)
+# Labels + Ações
 # -------------------------
 CLUSTER_NAMES = {
     0: "Residencial social – inadimplência recorrente e consumo estável",
@@ -197,9 +201,7 @@ CLUSTER_ACTIONS = {
     },
 }
 
-
 def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
-    """Estratégia combinada Cliente × Território."""
     terr_name = TERR_NAMES.get(territorio_int, f"Território {territorio_int}")
     base = {
         "territorio": terr_name,
@@ -209,29 +211,22 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
         "canais_sugeridos": [],
     }
 
-    # Diretriz por território
     if territorio_int == 0:
-        base["diretriz_territorial"] = (
-            "Priorizar ações coletivas/territoriais, regularização em massa e integração socioassistencial."
-        )
+        base["diretriz_territorial"] = "Priorizar ações coletivas/territoriais, regularização em massa e integração socioassistencial."
         base["tom_de_comunicacao"] = "Comunitário e empático; foco em regularização sustentável."
         base["canais_sugeridos"] = ["Mutirões por setor", "Pontos comunitários", "WhatsApp comunitário", "Ações em campo"]
     elif territorio_int == 1:
-        base["diretriz_territorial"] = (
-            "Priorizar ações individualizadas, cobrança segmentada e prevenção digital."
-        )
+        base["diretriz_territorial"] = "Priorizar ações individualizadas, cobrança segmentada e prevenção digital."
         base["tom_de_comunicacao"] = "Objetivo e preventivo; foco em negociação rápida e conveniência."
         base["canais_sugeridos"] = ["WhatsApp/SMS", "Campanhas digitais", "Portal/app", "Atendimento remoto"]
     else:
         base["diretriz_territorial"] = "Diretriz territorial não definida (valor fora do padrão 0/1)."
 
-    # Reforços por cluster
     info = CLUSTER_ACTIONS.get(cluster_int)
     if info:
         acoes = info["acoes"]
         base["acoes_reforcadas"] = acoes[:2] if len(acoes) >= 2 else acoes
 
-    # Ajustes práticos por combinação
     if cluster_int in (0, 7) and territorio_int == 0:
         base["acoes_reforcadas"] += ["Negociação coletiva por setor", "Programa contínuo (não pontual)"]
     if cluster_int == 2 and territorio_int == 1:
@@ -239,7 +234,6 @@ def compute_strategy(territorio_int: int, cluster_int: int) -> dict:
     if cluster_int == 6:
         base["acoes_reforcadas"] += ["Acionar time técnico (vistoria/regularização) antes de cobrança intensiva"]
 
-    # Remover duplicados preservando ordem
     seen = set()
     base["acoes_reforcadas"] = [x for x in base["acoes_reforcadas"] if not (x in seen or seen.add(x))]
     return base
@@ -273,7 +267,7 @@ if df_clientes is None or df_setores is None:
         "✅ Coloque na mesma pasta do app:\n"
         "- dashboard_clientes.xlsx\n"
         "- dashboard_setores.xlsx\n\n"
-        "OU marque 'Usar upload de arquivos' na barra lateral e envie os dois."
+        "OU marque 'Usar upload de arquivos' e envie os dois."
     )
     st.stop()
 
@@ -281,19 +275,23 @@ if df_clientes is None or df_setores is None:
 # Validations
 # -------------------------
 require_columns(df_clientes, ["cluster", "cluster_territorial", "TEM_DEBITO", "CD_SETOR"], "dashboard_clientes.xlsx")
-require_columns(df_setores, ["CD_SETOR", "cluster_territorial"], "dashboard_setores.xlsx")
+require_columns(df_setores,  ["CD_SETOR", "cluster_territorial"], "dashboard_setores.xlsx")
 
-# Chaves como string
+# Padronização de chaves
 df_clientes["CD_SETOR"] = df_clientes["CD_SETOR"].astype(str).str.strip()
-df_setores["CD_SETOR"] = df_setores["CD_SETOR"].astype(str).str.strip()
+df_setores["CD_SETOR"]  = df_setores["CD_SETOR"].astype(str).str.strip()
+
+# Ajuste solicitado: trocar "DESCONHECIDO" -> "RESIDENCIAL"
+if "TIPO_IMOVEL" in df_clientes.columns:
+    df_clientes["TIPO_IMOVEL"] = df_clientes["TIPO_IMOVEL"].replace("DESCONHECIDO", "RESIDENCIAL")
 
 # Numéricos
 df_clientes["cluster"] = pd.to_numeric(df_clientes["cluster"], errors="coerce")
 df_clientes["cluster_territorial"] = pd.to_numeric(df_clientes["cluster_territorial"], errors="coerce")
 df_clientes["TEM_DEBITO"] = pd.to_numeric(df_clientes["TEM_DEBITO"], errors="coerce")
-df_setores["cluster_territorial"] = pd.to_numeric(df_setores["cluster_territorial"], errors="coerce")
+df_setores["cluster_territorial"]  = pd.to_numeric(df_setores["cluster_territorial"], errors="coerce")
 
-# Enriquecer labels
+# Labels
 df_clientes["cluster_int"] = df_clientes["cluster"].apply(to_int_safe)
 df_clientes["territorio_int"] = df_clientes["cluster_territorial"].apply(to_int_safe)
 
@@ -332,7 +330,7 @@ if "TIPO_IMOVEL" in df_clientes.columns:
     op = sorted(df_clientes["TIPO_IMOVEL"].dropna().unique())
     sel_tipo_imovel = st.sidebar.multiselect("Tipo de imóvel", op, default=op)
 
-# Aplicar filtros
+# Aplicar filtros (base de clientes)
 df_f = df_clientes[
     (df_clientes["cluster_territorial"].isin(sel_territorio)) &
     (df_clientes["cluster"].isin(sel_cluster))
@@ -340,10 +338,10 @@ df_f = df_clientes[
 
 if sel_tarifa_social is not None:
     df_f = df_f[df_f["ENQUADRA_TARIFA_SOCIAL"].isin(sel_tarifa_social)].copy()
-
 if sel_tipo_imovel is not None:
     df_f = df_f[df_f["TIPO_IMOVEL"].isin(sel_tipo_imovel)].copy()
 
+# Setores filtrados só para ranking (continua útil)
 setores_filtrados = df_f["CD_SETOR"].dropna().unique().tolist()
 df_setores_f = df_setores[df_setores["CD_SETOR"].isin(setores_filtrados)].copy()
 
@@ -353,20 +351,16 @@ df_setores_f = df_setores[df_setores["CD_SETOR"].isin(setores_filtrados)].copy()
 total = len(df_f)
 pct_inad = (df_f["TEM_DEBITO"].mean() * 100) if total else 0
 
-# impacto financeiro (base filtrada)
 if "VALOR_TOTAL_ABERTO" in df_f.columns and total > 0:
     _v = pd.to_numeric(df_f["VALOR_TOTAL_ABERTO"], errors="coerce").fillna(0)
     impacto_total_f = float(_v.sum())
     impacto_medio_f = float(_v.mean())
-    impacto_mediano_f = float(_v.median())
 else:
     impacto_total_f = 0.0
     impacto_medio_f = 0.0
-    impacto_mediano_f = 0.0
 
 consumo12 = safe_mean(df_f, "MEDIA_CONSUMO_12_MESES")
 irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
-
 
 # -------------------------
 # Header + KPIs
@@ -431,63 +425,122 @@ if page == "Visão Geral":
     else:
         st.info("Coluna 'inadimplencia_media' não encontrada ou sem setores no filtro.")
 
-    # ----------------------------------------------------
-    # Heatmap / Tabela relativa (baseline = 1.00) — IBGE
-    # (coloque no fim da Visão Geral, como você pediu)
-    # ----------------------------------------------------
+    # ==========================================================
+    # HEATMAPS IBGE (baseline=1) — Territorial primeiro, depois Cliente
+    # ==========================================================
     st.divider()
-    st.subheader("Comparação relativa (baseline = 1,00) — Indicadores IBGE por cluster territorial")
+    st.subheader("Comparação relativa (IBGE) — baseline = 1,00")
 
-    # Ajuste aqui os nomes das colunas IBGE conforme existirem no seu df_setores
-    # (Se alguma não existir, ela será ignorada automaticamente pela verificação abaixo)
-    ibge_metrics = {
-        "Acesso à água": "ACESSO_AGUA",
-        "Acesso a esgoto": "ACESSO_ESGOTO",
-        "Lixo coletado": "LIXO_COLETADO_MORADORES",
-        "Alfabetização": "TAXA_ALFABETIZACAO",
-    }
-
-    # manter somente as métricas que existem no df_setores_f
-    ibge_metrics = {k: v for k, v in ibge_metrics.items() if v in df_setores_f.columns}
-
-    if len(df_setores_f) == 0:
-        st.info("Sem setores no filtro atual para calcular a comparação relativa.")
-    elif len(ibge_metrics) == 0:
+    df_ibge_sel, cols_ok = load_ibge_table()
+    if df_ibge_sel is None or len(cols_ok) == 0:
         st.info(
-            "Não encontrei no arquivo de setores as colunas IBGE esperadas. "
-            "Ajuste os nomes em `ibge_metrics` para bater com seu Excel."
+            "Não foi possível montar os heatmaps IBGE. Verifique se o arquivo "
+            f"**{DEFAULT_IBGE_XLSX.name}** está na pasta e contém **CD_SETOR** + colunas IBGE."
         )
     else:
-        df_rel_ibge = build_relative_table(
-            df_setores_f=df_setores_f,
+        # -------------------------
+        # 1) Heatmap TERRITORIAL
+        # -------------------------
+        st.markdown("### 1) Perfil socioestrutural por **cluster territorial** (IBGE)")
+
+        df_st = df_setores.copy()
+        df_st["CD_SETOR"] = df_st["CD_SETOR"].astype(str).str.strip()
+        df_st["cluster_territorial"] = pd.to_numeric(df_st["cluster_territorial"], errors="coerce")
+
+        df_ibge_terr = df_st.merge(df_ibge_sel, on="CD_SETOR", how="left")
+        df_rel_terr = build_relative_table(
+            df=df_ibge_terr.dropna(subset=["cluster_territorial"]),
             group_col="cluster_territorial",
-            metrics=ibge_metrics,
-            how={k: "mean" for k in ibge_metrics.keys()},
+            value_cols=cols_ok,
         )
 
-        # trocar o id por nome do território (opcional)
-        df_rel_ibge["territorio_nome"] = df_rel_ibge["cluster_territorial"].apply(to_int_safe).map(TERR_NAMES)
-        cols_order = ["cluster_territorial", "territorio_nome"] + list(ibge_metrics.keys())
-        cols_order = [c for c in cols_order if c in df_rel_ibge.columns]
-        df_rel_ibge = df_rel_ibge[cols_order]
+        df_rel_terr["territorio_nome"] = df_rel_terr["cluster_territorial"].apply(
+            lambda x: TERR_NAMES.get(int(x), str(x)) if pd.notna(x) else "—"
+        )
+        df_rel_terr = df_rel_terr.sort_values("cluster_territorial")
+        heat_terr = df_rel_terr.set_index("territorio_nome")[cols_ok].round(2)
 
-        # Mostra a tabela + heatmap
-        st.dataframe(df_rel_ibge, use_container_width=True)
-
-        # heatmap (sem barras empilhadas)
-        heat = df_rel_ibge.set_index("territorio_nome" if "territorio_nome" in df_rel_ibge.columns else "cluster_territorial")
-        heat = heat[[c for c in heat.columns if c in ibge_metrics.keys()]]
-
-        fig_hm = px.imshow(
-            heat,
-            aspect="auto",
+        fig_terr = px.imshow(
+            heat_terr,
             text_auto=True,
+            aspect="auto",
+            labels=dict(x="Indicadores IBGE", y="Cluster territorial", color="Relativo (baseline=1,00)"),
         )
-        fig_hm.update_layout(
-            xaxis_title="Indicadores (baseline = 1,00)",
-            yaxis_title="Cluster territorial",
+        fig_terr.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_terr, use_container_width=True)
+
+        with st.expander("Metodologia e leitura — heatmap territorial"):
+            st.markdown(
+                """
+**Como foi construído (resumo):**  
+1) Pegamos a planilha IBGE (por **setor censitário / CD_SETOR**).  
+2) Fazemos *merge* com a base **de setores** (que contém `cluster_territorial`).  
+3) Calculamos a **média dos indicadores por cluster territorial**.  
+4) Transformamos em “comparação relativa”:  
+   **valor_relativo = (média do cluster) ÷ (média geral)** → baseline = 1,00.
+
+**Como ler:**  
+- **1,00** = igual à média geral do conjunto  
+- **> 1,00** = acima da média geral naquele cluster territorial  
+- **< 1,00** = abaixo da média geral naquele cluster territorial  
+"""
+            )
+
+        st.divider()
+
+        # -------------------------
+        # 2) Heatmap CLIENTE
+        # -------------------------
+        st.markdown("### 2) Perfil socioestrutural por **cluster de cliente** (IBGE)")
+
+        df_cl = df_clientes.copy()
+        df_cl["CD_SETOR"] = df_cl["CD_SETOR"].astype(str).str.strip()
+        df_cl["cluster"] = pd.to_numeric(df_cl["cluster"], errors="coerce")
+
+        # (opcional) respeitar filtros atuais ao montar o heatmap de cliente
+        # Se você quiser SEMPRE global, troque df_f por df_clientes
+        df_cl_f = df_f.copy()
+        df_cl_f["CD_SETOR"] = df_cl_f["CD_SETOR"].astype(str).str.strip()
+        df_cl_f["cluster"] = pd.to_numeric(df_cl_f["cluster"], errors="coerce")
+
+        df_ibge_cli = df_cl_f.merge(df_ibge_sel, on="CD_SETOR", how="left")
+        df_rel_cli = build_relative_table(
+            df=df_ibge_cli.dropna(subset=["cluster"]),
+            group_col="cluster",
+            value_cols=cols_ok,
         )
-        st.plotly_chart(fig_hm, use_container_width=True)
+
+        df_rel_cli["cluster_nome"] = df_rel_cli["cluster"].apply(
+            lambda x: CLUSTER_NAMES.get(int(x), str(x)) if pd.notna(x) else "—"
+        )
+        df_rel_cli = df_rel_cli.sort_values("cluster")
+        heat_cli = df_rel_cli.set_index("cluster_nome")[cols_ok].round(2)
+
+        fig_cli = px.imshow(
+            heat_cli,
+            text_auto=True,
+            aspect="auto",
+            labels=dict(x="Indicadores IBGE", y="Cluster de cliente", color="Relativo (baseline=1,00)"),
+        )
+        fig_cli.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_cli, use_container_width=True)
+
+        with st.expander("Metodologia e leitura — heatmap por cliente"):
+            st.markdown(
+                """
+**Como foi construído (resumo):**  
+1) A base IBGE é territorial (por **CD_SETOR**). Para “levar” isso ao nível do cliente, fazemos *merge* clientes ↔ IBGE pelo `CD_SETOR`.  
+2) Assim, cada cliente “herda” os indicadores IBGE do seu setor.  
+3) Calculamos a **média dos indicadores por cluster de cliente**.  
+4) Transformamos em “comparação relativa”:  
+   **valor_relativo = (média do cluster) ÷ (média geral)** → baseline = 1,00.
+
+**Como ler:**  
+- **1,00** = igual à média geral do conjunto  
+- **> 1,00** = clientes desse cluster tendem a estar em setores “acima da média” naquele indicador  
+- **< 1,00** = clientes desse cluster tendem a estar em setores “abaixo da média” naquele indicador  
+"""
+            )
 
 # -------------------------
 # Page: Clientes
