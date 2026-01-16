@@ -360,6 +360,7 @@ else:
     impacto_medio_f = 0.0
 
 consumo12 = safe_mean(df_f, "MEDIA_CONSUMO_12_MESES")
+consumo24 = safe_mean(df_f, "MEDIA_CONSUMO_24_MESES")
 irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 
 # -------------------------
@@ -368,13 +369,14 @@ irreg_mean = safe_mean(df_f, "QTD_IRREGULARIDADES")
 st.title("Paraisópolis — Segmentação de Clientes e Território")
 st.caption("Dashboard para análise de clusters e apoio à estratégia de redução da inadimplência.")
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 k1.metric("Clientes (filtrados)", f"{total:,}".replace(",", "."))
 k2.metric("% Inadimplentes", f"{pct_inad:.1f}%")
 k3.metric("Débito total (R$)", br_money(impacto_total_f))
 k4.metric("Débito médio por cliente (R$)", br_money(impacto_medio_f))
 k5.metric("Consumo médio 12m", f"{consumo12:.2f}".replace(".", ","))
-k6.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
+k6.metric("Consumo médio 24m", f"{consumo24:.2f}".replace(".", ","))
+k7.metric("Irregularidades (média)", f"{irreg_mean:.2f}".replace(".", ","))
 
 st.divider()
 
